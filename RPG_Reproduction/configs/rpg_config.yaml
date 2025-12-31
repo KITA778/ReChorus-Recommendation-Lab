@@ -1,0 +1,32 @@
+﻿# RPG模型配置
+model:
+  name: "RPG"
+  hidden_size: 448
+  num_layers: 2
+  num_heads: 4
+  ffn_dim: 1792  # 4 * hidden_size
+  dropout: 0.1
+
+training:
+  batch_size: 256
+  learning_rate: 0.001
+  epochs: 20
+  optimizer: "adam"
+  weight_decay: 0.0
+
+semantic_id:
+  length: 16  # 语义ID长度（论文中测试了4,8,16,32,64）
+  codebook_size: 256  # 每个codebook的大小
+  temperature: 0.03  # softmax温度
+
+decoder:
+  use_graph: true
+  beam_size: 10
+  graph_neighbors: 100
+  decode_steps: 3
+
+dataset:
+  name: "ml-1m"
+  path: "data/processed/ml-1m"
+  min_seq_length: 5
+  max_seq_length: 50

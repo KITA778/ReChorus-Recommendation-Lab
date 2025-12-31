@@ -1,0 +1,305 @@
+﻿# src/models/rpg_rechorus.py
+"""
+ReChorus兼容的RPG模型
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from typing import List, Dict, Any, Optional
+
+from ..BaseModel import BaseModel
+
+class RPG(BaseModel):
+    """ReChorus兼容的RPG模型"""
+    
+    def __init__(self, config, dataset):
+        super(RPGReChorusModel, self).__init__(config, dataset)
+        
+        # RPG模型参数
+        self.semantic_id_length = config.get('semantic_id_length', 16)
+        self.codebook_size = config.get('codebook_size', 256)
+        self.embed_dim = config.get('embed_dim', 128)
+        
+        # 初始化语义ID生成器 (简化版)
+        self._init_semantic_ids()
+        
+        # 初始化模型组件
+        self._init_components()
+        
+        # 移动到设备
+        self.to(self.device)
+        
+        # 打印模型摘要
+        self.summary()
+    
+    def _init_semantic_ids(self):
+        """初始化语义ID (简化版)"""
+        print("初始化语义ID...")
+        
+        # 创建随机的语义ID (在实际应用中应从文件加载)
+        # 这里使用随机生成，实际应该使用OPQ量化器生成
+        np.random.seed(42)
+        self.semantic_ids = torch.LongTensor(
+            np.random.randint(0, self.codebook_size, 
+                            size=(self.n_items, self.semantic_id_length))
+        )
+        
+        # 创建token嵌入表
+        self.token_embeddings = nn.ModuleList([
+            nn.Embedding(self.codebook_size, self.embed_dim)
+            for _ in range(self.semantic_id_length)
+        ])
+        
+        # 初始化嵌入权重
+        for embedding in self.token_embeddings:
+            nn.init.normal_(embedding.weight, mean=0.0, std=0.02)
+    
+    def _init_components(self):
+        """初始化模型组件"""
+        # 序列编码器 (简化版Transformer)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embed_dim,
+            nhead=4,
+            dim_feedforward=512,
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        self.sequence_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=2
+        )
+        
+        # 位置编码
+        self.positional_encoding = self._create_positional_encoding()
+        
+        # 投影头 (每个token一个)
+        self.projection_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.embed_dim, self.embed_dim),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(self.embed_dim, self.embed_dim)
+            )
+            for _ in range(self.semantic_id_length)
+        ])
+        
+        # Layer normalization
+        self.layer_norm = nn.LayerNorm(self.embed_dim)
+    
+    def _create_positional_encoding(self):
+        """创建位置编码"""
+        max_len = 100
+        pe = torch.zeros(max_len, self.embed_dim)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, self.embed_dim, 2).float() * 
+                           (-np.log(10000.0) / self.embed_dim))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        return pe.unsqueeze(0)  # [1, max_len, embed_dim]
+    
+    def get_item_embedding(self, item_ids):
+        """
+        获取物品嵌入
+        
+        Args:
+            item_ids: 物品ID [batch_size, seq_len] 或 [batch_size]
+            
+        Returns:
+            item_embeddings: 物品嵌入
+        """
+        input_shape = item_ids.shape
+        
+        # 展平处理
+        flat_item_ids = item_ids.flatten()
+        
+        # 获取语义ID
+        semantic_ids = self.semantic_ids[flat_item_ids].to(self.device)  # [flat_size, semantic_id_length]
+        
+        # 获取每个token的嵌入
+        token_embeds_list = []
+        for i in range(self.semantic_id_length):
+            token_ids = semantic_ids[:, i]  # [flat_size]
+            token_embed = self.token_embeddings[i](token_ids)  # [flat_size, embed_dim]
+            token_embeds_list.append(token_embed.unsqueeze(1))  # [flat_size, 1, embed_dim]
+        
+        # 聚合token嵌入 (平均池化)
+        token_embeds = torch.cat(token_embeds_list, dim=1)  # [flat_size, semantic_id_length, embed_dim]
+        item_embeds = torch.mean(token_embeds, dim=1)  # [flat_size, embed_dim]
+        
+        # 恢复原始形状
+        item_embeds = item_embeds.view(*input_shape, -1)
+        
+        return item_embeds
+    
+    def forward(self, batch_data):
+        """
+        前向传播
+        
+        Args:
+            batch_data: 批次数据，包含'user_id'和'item_id'
+            
+        Returns:
+            predictions: 预测结果
+        """
+        # 提取输入序列
+        if 'item_id' in batch_data:
+            # 单个物品预测
+            item_ids = batch_data['item_id']
+            item_embeddings = self.get_item_embedding(item_ids)  # [batch_size, embed_dim]
+            
+            # 返回物品嵌入
+            return item_embeddings
+        
+        elif 'seq_items' in batch_data:
+            # 序列预测
+            seq_items = batch_data['seq_items']  # [batch_size, seq_len]
+            
+            # 获取序列嵌入
+            seq_embeddings = self.get_item_embedding(seq_items)  # [batch_size, seq_len, embed_dim]
+            
+            # 添加位置编码
+            seq_len = seq_items.shape[1]
+            seq_embeddings = seq_embeddings + self.positional_encoding[:, :seq_len, :].to(self.device)
+            
+            # 通过Transformer编码器
+            encoded_seq = self.sequence_encoder(seq_embeddings)  # [batch_size, seq_len, embed_dim]
+            
+            # 获取序列表示 (最后一个位置)
+            sequence_embedding = encoded_seq[:, -1, :]  # [batch_size, embed_dim]
+            sequence_embedding = self.layer_norm(sequence_embedding)
+            
+            # 计算每个token的logits
+            token_logits = []
+            for i in range(self.semantic_id_length):
+                projected = self.projection_heads[i](sequence_embedding)  # [batch_size, embed_dim]
+                token_embedding = self.token_embeddings[i].weight  # [codebook_size, embed_dim]
+                logits = torch.matmul(projected, token_embedding.T)  # [batch_size, codebook_size]
+                token_logits.append(logits)
+            
+            return token_logits, sequence_embedding
+        
+        else:
+            raise ValueError("batch_data必须包含'item_id'或'seq_items'")
+    
+    def calculate_loss(self, batch_data):
+        """
+        计算损失
+        
+        Args:
+            batch_data: 批次数据
+            
+        Returns:
+            loss: 损失值
+            loss_dict: 损失字典
+        """
+        # 前向传播
+        token_logits, _ = self.forward(batch_data)
+        
+        # 获取目标物品
+        target_items = batch_data['target_item']
+        
+        # 获取目标物品的语义ID
+        target_semantic_ids = self.semantic_ids[target_items].to(self.device)  # [batch_size, semantic_id_length]
+        
+        # 计算多令牌预测损失
+        losses = []
+        loss_dict = {}
+        
+        for i in range(self.semantic_id_length):
+            logits = token_logits[i]  # [batch_size, codebook_size]
+            targets = target_semantic_ids[:, i]  # [batch_size]
+            
+            loss = F.cross_entropy(logits, targets)
+            losses.append(loss)
+            loss_dict[f'token_{i}_loss'] = loss.item()
+        
+        # 总损失
+        total_loss = torch.sum(torch.stack(losses))
+        loss_dict['total_loss'] = total_loss.item()
+        
+        return total_loss, loss_dict
+    
+    def predict(self, batch_data, top_k=10):
+        """
+        预测下一个物品
+        
+        Args:
+            batch_data: 批次数据
+            top_k: 返回top-k个推荐
+            
+        Returns:
+            predicted_items: 预测的物品 [batch_size, top_k]
+            scores: 预测分数 [batch_size, top_k]
+        """
+        self.eval()
+        
+        with torch.no_grad():
+            # 获取token logits
+            token_logits, _ = self.forward(batch_data)
+            
+            # 计算所有物品的分数
+            batch_size = token_logits[0].shape[0]
+            
+            # 简化实现: 随机选择top_k个物品
+            # 在实际实现中，应该使用图约束解码
+            predicted_items = torch.randint(0, self.n_items, (batch_size, top_k))
+            scores = torch.rand(batch_size, top_k)
+            
+            return predicted_items, scores
+
+
+# 创建RPG模型的工厂函数
+def create_rpg_model(config, dataset):
+    """创建RPG模型 (工厂函数)"""
+    return RPGReChorusModel(config, dataset)
+
+
+# 注册到ReChorus模型系统
+try:
+    # 尝试导入ReChorus的模型注册系统
+    from models import register_model
+    
+    @register_model('RPG')
+    class RPGModelWrapper:
+        """RPG模型包装器，用于ReChorus框架"""
+        
+        def __init__(self, config, dataset):
+            self.model = RPGReChorusModel(config, dataset)
+        
+        def forward(self, *args, **kwargs):
+            return self.model.forward(*args, **kwargs)
+        
+        def calculate_loss(self, *args, **kwargs):
+            return self.model.calculate_loss(*args, **kwargs)
+        
+        def predict(self, *args, **kwargs):
+            return self.model.predict(*args, **kwargs)
+        
+        def __getattr__(self, name):
+            # 代理所有其他属性和方法到内部模型
+            return getattr(self.model, name)
+    
+    print("RPG模型已注册到ReChorus框架")
+    
+except ImportError:
+    print("ReChorus框架未找到，使用独立模式")
+
+# 确保模型被正确注册
+import sys
+import os
+
+# 添加到模型注册表
+if "RPG" not in sys.modules.get("models.developing.__init__", {}):
+    # 手动注册
+    from models.developing import __init__ as dev_init
+    if hasattr(dev_init, "model_dict"):
+        dev_init.model_dict["RPG"] = RPG
+    else:
+        dev_init.model_dict = {"RPG": RPG}
+    
+    print("RPG模型已手动注册到ReChorus框架")

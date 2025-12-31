@@ -1,3 +1,9 @@
+---
+noteId: "d62d85b0e3c711f091a84dc5bb86f4dd"
+tags: []
+
+---
+
 # Dataset
 
 We include the public [Amazon dataset](http://jmcauley.ucsd.edu/data/amazon/links.html) (*Grocery_and_Gourmet_Food* category, 5-core version with metadata), [MIND-Large dataset](https://msnews.github.io/), and [MovieLens-1M](https://grouplens.org/datasets/movielens/) as our built-in datasets.

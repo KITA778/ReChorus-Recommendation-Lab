@@ -1,3 +1,9 @@
+---
+noteId: "d62dacc0e3c711f091a84dc5bb86f4dd"
+tags: []
+
+---
+
 ## Getting Started
 
 1. Install [Anaconda](https://docs.conda.io/en/latest/miniconda.html) with Python >= 3.10
