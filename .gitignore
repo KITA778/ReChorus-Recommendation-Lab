@@ -1,10 +1,19 @@
-.ipynb_checkpoints/
-*.xlsx
-.idea/
-__pycache__/
-.DS_Store
-*.pyc
-figure/
-doc/
+# 模型文件（通常很大，不上传）
 model/
-search.py
+
+# 日志和预测结果（可本地生成，不上传）
+log/
+
+# 数据缓存文件
+*.pkl
+*.pickle
+
+# 开发环境/IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
